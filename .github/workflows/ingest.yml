@@ -24,14 +24,14 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install google-api-python-client port-sdk
+        pip install google-api-python-client requests
     
     - name: Run ingestion
       run: |
         python << 'EOF'
         from googleapiclient.discovery import build
-        from port_sdk import Port
         import os
+        import requests
         from datetime import datetime
         import logging
         import sys
@@ -48,8 +48,8 @@ jobs:
                 self.PLAYLIST_ID = 'PL5ErBr2d3QJH0kbwTQ7HSuzvBb4zIWzhy'
                 try:
                     self.youtube = build('youtube', 'v3', developerKey=os.environ['YOUTUBE_API_KEY'])
-                    self.port = Port(os.environ['PORT_API_KEY'])
-                    logger.info("Successfully initialized YouTube and Port clients")
+                    self.port_api_key = os.environ['PORT_API_KEY']
+                    logger.info("Successfully initialized YouTube client")
                 except KeyError as e:
                     logger.error(f"Missing environment variable: {str(e)}")
                     raise
@@ -115,10 +115,10 @@ jobs:
                                 }
                                 
                                 # Create or update video in Port
-                                self.port.create_entity('video', video_data)
+                                self.create_entity('video', video_data)
                                 
                                 # Create relationship with playlist
-                                self.port.create_relationship({
+                                self.create_relationship({
                                     'sourceId': video_id,
                                     'sourceBlueprint': 'video',
                                     'targetId': playlist_id,
@@ -133,13 +133,39 @@ jobs:
                     logger.error(f"Error processing videos: {str(e)}")
                     raise
 
+            def create_entity(self, entity_type, entity_data):
+                try:
+                    url = f'https://api.getport.io/entities/{entity_type}'
+                    headers = {'Authorization': f'Bearer {self.port_api_key}'}
+                    response = requests.post(url, json=entity_data, headers=headers)
+                    if response.status_code != 201:
+                        logger.error(f"Error creating {entity_type}: {response.text}")
+                        raise Exception(f"Failed to create {entity_type}")
+                    logger.info(f"Successfully created {entity_type} with identifier {entity_data['identifier']}")
+                except Exception as e:
+                    logger.error(f"Error creating entity: {str(e)}")
+                    raise
+
+            def create_relationship(self, relationship_data):
+                try:
+                    url = 'https://api.getport.io/relationships'
+                    headers = {'Authorization': f'Bearer {self.port_api_key}'}
+                    response = requests.post(url, json=relationship_data, headers=headers)
+                    if response.status_code != 201:
+                        logger.error(f"Error creating relationship: {response.text}")
+                        raise Exception("Failed to create relationship")
+                    logger.info(f"Successfully created relationship between {relationship_data['sourceId']} and {relationship_data['targetId']}")
+                except Exception as e:
+                    logger.error(f"Error creating relationship: {str(e)}")
+                    raise
+
             def run(self):
                 try:
                     logger.info(f"Starting ingestion at {datetime.now()}")
                     
                     # Process playlist
                     playlist_data = self.fetch_playlist_info()
-                    self.port.create_entity('playlist', playlist_data)
+                    self.create_entity('playlist', playlist_data)
                     
                     # Process videos
                     self.process_videos(self.PLAYLIST_ID)
