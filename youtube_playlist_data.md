@@ -1,6 +1,6 @@
-# YouTube Playlist Integration with Port
+# YouTube Playlist & Videos catalogue in Port
 
-A comprehensive guide for integrating YouTube playlist data into Port, including data modeling, ingestion, and visualization.
+A comprehensive guide for creating YouTube playlist & Videos catalogue in Port, including data modeling, ingestion, and visualization.
 
 ## Table of Contents
 - [Overview](#overview)
