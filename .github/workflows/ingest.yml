@@ -2,8 +2,8 @@ name: Ingest YouTube Playlist
 
 on:
   schedule:
-    - cron: "0 0 * * *"  # Triggered every day at midnight UTC
-  workflow_dispatch:
+    - cron: "0 0 * * *"  # Runs daily at midnight UTC
+  workflow_dispatch:      # Allows manual triggering
 
 jobs:
   ingest-youtube-data:
@@ -14,10 +14,11 @@ jobs:
       PORT_API_KEY: ${{ secrets.PORT_API_KEY }}
     
     steps:
-    - uses: actions/checkout@v2
+    - name: Checkout repository
+      uses: actions/checkout@v3
     
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v4
       with:
         python-version: '3.9'
     
@@ -26,7 +27,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install google-api-python-client requests
     
-    - name: Run ingestion
+    - name: Run YouTube Port ingestion
       run: |
         python << 'EOF'
         import os
@@ -38,18 +39,18 @@ jobs:
 
         # Set up logging
         logging.basicConfig(level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        stream=sys.stdout
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            stream=sys.stdout
         )
         logger = logging.getLogger(__name__)
 
         class YouTubePortIngestion:
             def __init__(self):
                 self.PLAYLIST_ID = 'PL5ErBr2d3QJH0kbwTQ7HSuzvBb4zIWzhy'
-                self.port_api_url = "https://api.getport.io/"  # Base URL for Port API
+                self.port_api_url = "https://api.getport.io/v1"
                 self.port_api_key = os.environ['PORT_API_KEY']
-                self.playlist_blueprint_identifier = "playlist"  # Blueprint identifier for playlist
-                self.video_blueprint_identifier = "video"  # Blueprint identifier for video
+                self.playlist_blueprint_identifier = "playlist"
+                self.video_blueprint_identifier = "video"
                 try:
                     self.youtube = build('youtube', 'v3', developerKey=os.environ['YOUTUBE_API_KEY'])
                     logger.info("Successfully initialized YouTube client")
@@ -67,14 +68,21 @@ jobs:
                         id=self.PLAYLIST_ID
                     ).execute()
                     
+                    if not playlist_response.get('items'):
+                        raise Exception(f"No playlist found with ID {self.PLAYLIST_ID}")
+                    
                     playlist = playlist_response['items'][0]
-                    return {
+                    playlist_data = {
                         'identifier': self.PLAYLIST_ID,
-                        'title': playlist['snippet']['title'],
-                        'description': playlist['snippet']['description'],
-                        'thumbnailUrl': playlist['snippet']['thumbnails']['default']['url'],
-                        'videoCount': playlist['contentDetails']['itemCount']
+                        'properties': {
+                            'title': playlist['snippet']['title'],
+                            'description': playlist['snippet']['description'],
+                            'thumbnailUrl': playlist['snippet']['thumbnails']['default']['url'],
+                            'videoCount': playlist['contentDetails']['itemCount']
+                        }
                     }
+                    logger.info(f"Fetched playlist data: {playlist_data}")
+                    return playlist_data
                 except Exception as e:
                     logger.error(f"Error fetching playlist info: {str(e)}")
                     raise
@@ -82,20 +90,22 @@ jobs:
             def fetch_video_details(self, video_id):
                 try:
                     video_response = self.youtube.videos().list(
-                        part='statistics,contentDetails',
+                        part='statistics,contentDetails,snippet',
                         id=video_id
                     ).execute()
-                    return video_response['items'][0]
+                    return video_response['items'][0] if video_response.get('items') else None
                 except Exception as e:
                     logger.error(f"Error fetching video details for {video_id}: {str(e)}")
                     return None
 
             def update_or_create_entity(self, entity_data, blueprint_identifier):
-                url = f"{self.port_api_url}/v1/blueprints/{blueprint_identifier}/entities"
+                url = f"{self.port_api_url}/blueprints/{blueprint_identifier}/entities"
                 headers = {
                     'Authorization': f"Bearer {self.port_api_key}",
                     'Content-Type': 'application/json'
                 }
+
+                logger.info(f"Attempting to create/update entity with data: {entity_data}")
 
                 # Check if the entity already exists
                 existing_entity = self.get_entity(entity_data['identifier'], blueprint_identifier)
@@ -109,12 +119,12 @@ jobs:
                 
                 if response.status_code not in [200, 201]:
                     logger.error(f"Error {response.status_code}: {response.text}")
-                    raise Exception(f"Failed to create or update entity")
+                    raise Exception(f"Failed to create or update entity: {response.text}")
                 else:
                     logger.info(f"Successfully handled entity with ID {entity_data['identifier']}")
 
             def get_entity(self, entity_id, blueprint_identifier):
-                url = f"{self.port_api_url}/v1/blueprints/{blueprint_identifier}/entities/{entity_id}"
+                url = f"{self.port_api_url}/blueprints/{blueprint_identifier}/entities/{entity_id}"
                 headers = {
                     'Authorization': f"Bearer {self.port_api_key}",
                     'Content-Type': 'application/json'
@@ -122,35 +132,12 @@ jobs:
 
                 response = requests.get(url, headers=headers)
                 if response.status_code == 200:
-                    return response.json()  # Return existing entity data
+                    return response.json()
                 elif response.status_code == 404:
-                    return None  # Entity doesn't exist
+                    return None
                 else:
                     logger.error(f"Error {response.status_code}: {response.text}")
                     raise Exception(f"Failed to fetch entity with ID {entity_id}")
-
-            def create_or_update_relationship(self, source_id, target_id, relationship):
-                url = f"{self.port_api_url}/v1/blueprints/{self.playlist_blueprint_identifier}/relationships"
-                headers = {
-                    'Authorization': f"Bearer {self.port_api_key}",
-                    'Content-Type': 'application/json'
-                }
-
-                relationship_data = {
-                    'sourceId': source_id,
-                    'sourceBlueprint': self.video_blueprint_identifier,
-                    'targetId': target_id,
-                    'targetBlueprint': self.playlist_blueprint_identifier,
-                    'relationship': relationship
-                }
-
-                response = requests.post(url, json=relationship_data, headers=headers)
-
-                if response.status_code not in [200, 201]:
-                    logger.error(f"Error {response.status_code}: {response.text}")
-                    raise Exception(f"Failed to create relationship between {source_id} and {target_id}")
-                else:
-                    logger.info(f"Successfully created relationship between {source_id} and {target_id}")
 
             def process_videos(self, playlist_id):
                 try:
@@ -170,20 +157,21 @@ jobs:
                             if video_details:
                                 video_data = {
                                     'identifier': video_id,
-                                    'title': item['snippet']['title'],
-                                    'description': item['snippet']['description'],
-                                    'thumbnailUrl': item['snippet']['thumbnails']['default']['url'],
-                                    'duration': video_details['contentDetails']['duration'],
-                                    'viewCount': int(video_details['statistics'].get('viewCount', 0)),
-                                    'likeCount': int(video_details['statistics'].get('likeCount', 0)),
-                                    'commentCount': int(video_details['statistics'].get('commentCount', 0))
+                                    'properties': {
+                                        'title': item['snippet']['title'],
+                                        'description': item['snippet']['description'],
+                                        'thumbnailUrl': item['snippet']['thumbnails']['default']['url'],
+                                        'duration': video_details['contentDetails']['duration'],
+                                        'viewCount': int(video_details['statistics'].get('viewCount', 0)),
+                                        'likeCount': int(video_details['statistics'].get('likeCount', 0)),
+                                        'commentCount': int(video_details['statistics'].get('commentCount', 0))
+                                    },
+                                    'relations': {
+                                        'playlist': playlist_id
+                                    }
                                 }
                                 
-                                # Update or create the video in Port
                                 self.update_or_create_entity(video_data, self.video_blueprint_identifier)
-                                
-                                # Create or update the relationship between video and playlist
-                                self.create_or_update_relationship(video_id, playlist_id, 'belongs_to')
                         
                         next_page_token = video_response.get('nextPageToken')
                         if not next_page_token:
