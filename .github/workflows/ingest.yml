@@ -90,7 +90,7 @@ jobs:
                     logger.error(f"Error fetching video details for {video_id}: {str(e)}")
                     return None
 
-            def update_or_create_entity(self, entity_type, entity_data, blueprint_identifier):
+            def update_or_create_entity(self, entity_data, blueprint_identifier):
                 url = f"{self.port_api_url}/v1/blueprints/{blueprint_identifier}/entities"
                 headers = {
                     'Authorization': f"Bearer {self.port_api_key}",
@@ -98,22 +98,22 @@ jobs:
                 }
 
                 # Check if the entity already exists
-                existing_entity = self.get_entity(entity_type, entity_data['identifier'], blueprint_identifier)
+                existing_entity = self.get_entity(entity_data['identifier'], blueprint_identifier)
                 
                 if existing_entity:
-                    logger.info(f"Updating existing {entity_type} with ID {entity_data['identifier']}")
+                    logger.info(f"Updating existing entity with ID {entity_data['identifier']}")
                     response = requests.patch(f"{url}/{entity_data['identifier']}", json=entity_data, headers=headers)
                 else:
-                    logger.info(f"Creating new {entity_type} with ID {entity_data['identifier']}")
+                    logger.info(f"Creating new entity with ID {entity_data['identifier']}")
                     response = requests.post(url, json=entity_data, headers=headers)
                 
                 if response.status_code not in [200, 201]:
                     logger.error(f"Error {response.status_code}: {response.text}")
-                    raise Exception(f"Failed to create or update {entity_type}")
+                    raise Exception(f"Failed to create or update entity")
                 else:
-                    logger.info(f"Successfully handled {entity_type} with ID {entity_data['identifier']}")
+                    logger.info(f"Successfully handled entity with ID {entity_data['identifier']}")
 
-            def get_entity(self, entity_type, entity_id, blueprint_identifier):
+            def get_entity(self, entity_id, blueprint_identifier):
                 url = f"{self.port_api_url}/v1/blueprints/{blueprint_identifier}/entities/{entity_id}"
                 headers = {
                     'Authorization': f"Bearer {self.port_api_key}",
@@ -127,7 +127,7 @@ jobs:
                     return None  # Entity doesn't exist
                 else:
                     logger.error(f"Error {response.status_code}: {response.text}")
-                    raise Exception(f"Failed to fetch {entity_type} with ID {entity_id}")
+                    raise Exception(f"Failed to fetch entity with ID {entity_id}")
 
             def create_or_update_relationship(self, source_id, target_id, relationship):
                 url = f"{self.port_api_url}/v1/blueprints/{self.playlist_blueprint_identifier}/relationships"
@@ -180,7 +180,7 @@ jobs:
                                 }
                                 
                                 # Update or create the video in Port
-                                self.update_or_create_entity('video', video_data, self.video_blueprint_identifier)
+                                self.update_or_create_entity(video_data, self.video_blueprint_identifier)
                                 
                                 # Create or update the relationship between video and playlist
                                 self.create_or_update_relationship(video_id, playlist_id, 'belongs_to')
@@ -198,7 +198,7 @@ jobs:
                     
                     # Process playlist
                     playlist_data = self.fetch_playlist_info()
-                    self.update_or_create_entity('playlist', playlist_data, self.playlist_blueprint_identifier)
+                    self.update_or_create_entity(playlist_data, self.playlist_blueprint_identifier)
                     
                     # Process videos
                     self.process_videos(self.PLAYLIST_ID)
