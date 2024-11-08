@@ -12,6 +12,8 @@ jobs:
     env:
       YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
       PORT_API_KEY: ${{ secrets.PORT_API_KEY }}
+      PORT_CLIENT_ID: ${{ secrets.PORT_CLIENT_ID }}
+      PORT_CLIENT_SECRET: ${{ secrets.PORT_CLIENT_SECRET }}
     
     steps:
     - name: Checkout repository
@@ -36,6 +38,7 @@ jobs:
         from googleapiclient.discovery import build
         from datetime import datetime
         import sys
+        import time
 
         # Set up logging
         logging.basicConfig(level=logging.INFO,
@@ -49,17 +52,62 @@ jobs:
                 self.PLAYLIST_ID = 'PL5ErBr2d3QJH0kbwTQ7HSuzvBb4zIWzhy'
                 self.port_api_url = "https://api.getport.io/v1"
                 self.port_api_key = os.environ['PORT_API_KEY']
+                self.port_client_id = os.environ.get('PORT_CLIENT_ID')
+                self.port_client_secret = os.environ.get('PORT_CLIENT_SECRET')
                 self.playlist_blueprint_identifier = "playlist"
                 self.video_blueprint_identifier = "video"
+                self.access_token = None
                 try:
                     self.youtube = build('youtube', 'v3', developerKey=os.environ['YOUTUBE_API_KEY'])
-                    logger.info("Successfully initialized YouTube client")
+                    self.refresh_port_token()
+                    logger.info("Successfully initialized clients")
                 except KeyError as e:
                     logger.error(f"Missing environment variable: {str(e)}")
                     raise
                 except Exception as e:
                     logger.error(f"Error initializing clients: {str(e)}")
                     raise
+
+            def refresh_port_token(self):
+                """Get a fresh access token from Port"""
+                try:
+                    # If using client credentials
+                    if self.port_client_id and self.port_client_secret:
+                        auth_url = f"{self.port_api_url}/auth/access_token"
+                        auth_data = {
+                            "clientId": self.port_client_id,
+                            "clientSecret": self.port_client_secret
+                        }
+                        response = requests.post(auth_url, json=auth_data)
+                        if response.status_code == 200:
+                            self.access_token = response.json().get('accessToken')
+                            logger.info("Successfully refreshed Port access token")
+                        else:
+                            raise Exception(f"Failed to get access token: {response.text}")
+                    else:
+                        # Fall back to using API key directly
+                        self.access_token = self.port_api_key
+                except Exception as e:
+                    logger.error(f"Error refreshing token: {str(e)}")
+                    raise
+
+            def get_headers(self):
+                """Get headers with current access token"""
+                return {
+                    'Authorization': f"Bearer {self.access_token}",
+                    'Content-Type': 'application/json'
+                }
+
+            def handle_response(self, response, operation):
+                """Handle API response and refresh token if needed"""
+                if response.status_code == 401:
+                    logger.info("Token expired, refreshing...")
+                    self.refresh_port_token()
+                    return False
+                elif response.status_code not in [200, 201]:
+                    logger.error(f"Error {response.status_code}: {response.text}")
+                    raise Exception(f"Failed to {operation}: {response.text}")
+                return True
 
             def fetch_playlist_info(self):
                 try:
@@ -99,45 +147,62 @@ jobs:
                     return None
 
             def update_or_create_entity(self, entity_data, blueprint_identifier):
-                url = f"{self.port_api_url}/blueprints/{blueprint_identifier}/entities"
-                headers = {
-                    'Authorization': f"Bearer {self.port_api_key}",
-                    'Content-Type': 'application/json'
-                }
-
-                logger.info(f"Attempting to create/update entity with data: {entity_data}")
-
-                # Check if the entity already exists
-                existing_entity = self.get_entity(entity_data['identifier'], blueprint_identifier)
+                max_retries = 3
+                retry_count = 0
                 
-                if existing_entity:
-                    logger.info(f"Updating existing entity with ID {entity_data['identifier']}")
-                    response = requests.patch(f"{url}/{entity_data['identifier']}", json=entity_data, headers=headers)
-                else:
-                    logger.info(f"Creating new entity with ID {entity_data['identifier']}")
-                    response = requests.post(url, json=entity_data, headers=headers)
-                
-                if response.status_code not in [200, 201]:
-                    logger.error(f"Error {response.status_code}: {response.text}")
-                    raise Exception(f"Failed to create or update entity: {response.text}")
-                else:
-                    logger.info(f"Successfully handled entity with ID {entity_data['identifier']}")
+                while retry_count < max_retries:
+                    try:
+                        url = f"{self.port_api_url}/blueprints/{blueprint_identifier}/entities"
+                        headers = self.get_headers()
+                        
+                        logger.info(f"Attempting to create/update entity with data: {entity_data}")
+                        
+                        # Check if entity exists
+                        existing_entity = self.get_entity(entity_data['identifier'], blueprint_identifier)
+                        
+                        if existing_entity:
+                            logger.info(f"Updating existing entity with ID {entity_data['identifier']}")
+                            response = requests.patch(
+                                f"{url}/{entity_data['identifier']}", 
+                                json=entity_data, 
+                                headers=headers
+                            )
+                        else:
+                            logger.info(f"Creating new entity with ID {entity_data['identifier']}")
+                            response = requests.post(url, json=entity_data, headers=headers)
+                        
+                        if self.handle_response(response, "create/update entity"):
+                            logger.info(f"Successfully handled entity with ID {entity_data['identifier']}")
+                            return
+                        
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            time.sleep(1)  # Wait before retrying
+                            
+                    except Exception as e:
+                        logger.error(f"Error in update_or_create_entity: {str(e)}")
+                        retry_count += 1
+                        if retry_count >= max_retries:
+                            raise
+                        time.sleep(1)
+
+                raise Exception(f"Failed to create/update entity after {max_retries} attempts")
 
             def get_entity(self, entity_id, blueprint_identifier):
-                url = f"{self.port_api_url}/blueprints/{blueprint_identifier}/entities/{entity_id}"
-                headers = {
-                    'Authorization': f"Bearer {self.port_api_key}",
-                    'Content-Type': 'application/json'
-                }
-
-                response = requests.get(url, headers=headers)
-                if response.status_code == 200:
-                    return response.json()
-                elif response.status_code == 404:
+                try:
+                    url = f"{self.port_api_url}/blueprints/{blueprint_identifier}/entities/{entity_id}"
+                    response = requests.get(url, headers=self.get_headers())
+                    
+                    if response.status_code == 404:
+                        return None
+                    
+                    if self.handle_response(response, "fetch entity"):
+                        return response.json()
                     return None
-                else:
-                    logger.error(f"Error {response.status_code}: {response.text}")
-                    raise Exception(f"Failed to fetch entity with ID {entity_id}")
+                    
+                except Exception as e:
+                    logger.error(f"Error in get_entity: {str(e)}")
+                    return None
 
             def process_videos(self, playlist_id):
                 try:
