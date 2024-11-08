@@ -35,6 +35,21 @@ Before starting this integration, ensure you have:
    - Sign up at [app.getport.io](https://app.getport.io)
    - Verify your email and log in
 
+   **Installing Port's GitHub App**
+   - Log into your Port account at [app.getport.io](https://app.getport.io)
+   - Navigate to "Data Sources" in the left sidebar
+   - Find and click on "GitHub" under the available integrations
+   - Click "Install GitHub App"
+   - You will be redirected to GitHub's app installation page
+   - Choose whether to install the app on all repositories or select specific ones
+   - If selecting specific repositories:
+     - Choose the repositories you want to monitor
+     - Click "Install & Authorize"
+   - Return to Port's "Data Sources" page
+   - Check that GitHub appears as a connected integration
+   - The status should show as "Active"
+
+
 2. **GitHub Account**
    - Active GitHub account
    - Repository where you'll set up the workflow
