@@ -29,11 +29,11 @@ jobs:
     - name: Run ingestion
       run: |
         python << 'EOF'
-        from googleapiclient.discovery import build
         import os
-        import requests
-        from datetime import datetime
         import logging
+        import requests
+        from googleapiclient.discovery import build
+        from datetime import datetime
         import sys
 
         # Set up logging
@@ -46,9 +46,12 @@ jobs:
         class YouTubePortIngestion:
             def __init__(self):
                 self.PLAYLIST_ID = 'PL5ErBr2d3QJH0kbwTQ7HSuzvBb4zIWzhy'
+                self.port_api_url = "https://api.getport.io/"  # Base URL for Port API
+                self.port_api_key = os.environ['PORT_API_KEY']
+                self.playlist_blueprint_identifier = "playlist"  # Blueprint identifier for playlist
+                self.video_blueprint_identifier = "video"  # Blueprint identifier for video
                 try:
                     self.youtube = build('youtube', 'v3', developerKey=os.environ['YOUTUBE_API_KEY'])
-                    self.port_api_key = os.environ['PORT_API_KEY']
                     logger.info("Successfully initialized YouTube client")
                 except KeyError as e:
                     logger.error(f"Missing environment variable: {str(e)}")
@@ -87,6 +90,68 @@ jobs:
                     logger.error(f"Error fetching video details for {video_id}: {str(e)}")
                     return None
 
+            def update_or_create_entity(self, entity_type, entity_data, blueprint_identifier):
+                url = f"{self.port_api_url}/v1/blueprints/{blueprint_identifier}/entities"
+                headers = {
+                    'Authorization': f"Bearer {self.port_api_key}",
+                    'Content-Type': 'application/json'
+                }
+
+                # Check if the entity already exists
+                existing_entity = self.get_entity(entity_type, entity_data['identifier'], blueprint_identifier)
+                
+                if existing_entity:
+                    logger.info(f"Updating existing {entity_type} with ID {entity_data['identifier']}")
+                    response = requests.patch(f"{url}/{entity_data['identifier']}", json=entity_data, headers=headers)
+                else:
+                    logger.info(f"Creating new {entity_type} with ID {entity_data['identifier']}")
+                    response = requests.post(url, json=entity_data, headers=headers)
+                
+                if response.status_code not in [200, 201]:
+                    logger.error(f"Error {response.status_code}: {response.text}")
+                    raise Exception(f"Failed to create or update {entity_type}")
+                else:
+                    logger.info(f"Successfully handled {entity_type} with ID {entity_data['identifier']}")
+
+            def get_entity(self, entity_type, entity_id, blueprint_identifier):
+                url = f"{self.port_api_url}/v1/blueprints/{blueprint_identifier}/entities/{entity_id}"
+                headers = {
+                    'Authorization': f"Bearer {self.port_api_key}",
+                    'Content-Type': 'application/json'
+                }
+
+                response = requests.get(url, headers=headers)
+                if response.status_code == 200:
+                    return response.json()  # Return existing entity data
+                elif response.status_code == 404:
+                    return None  # Entity doesn't exist
+                else:
+                    logger.error(f"Error {response.status_code}: {response.text}")
+                    raise Exception(f"Failed to fetch {entity_type} with ID {entity_id}")
+
+            def create_or_update_relationship(self, source_id, target_id, relationship):
+                url = f"{self.port_api_url}/v1/blueprints/{self.playlist_blueprint_identifier}/relationships"
+                headers = {
+                    'Authorization': f"Bearer {self.port_api_key}",
+                    'Content-Type': 'application/json'
+                }
+
+                relationship_data = {
+                    'sourceId': source_id,
+                    'sourceBlueprint': self.video_blueprint_identifier,
+                    'targetId': target_id,
+                    'targetBlueprint': self.playlist_blueprint_identifier,
+                    'relationship': relationship
+                }
+
+                response = requests.post(url, json=relationship_data, headers=headers)
+
+                if response.status_code not in [200, 201]:
+                    logger.error(f"Error {response.status_code}: {response.text}")
+                    raise Exception(f"Failed to create relationship between {source_id} and {target_id}")
+                else:
+                    logger.info(f"Successfully created relationship between {source_id} and {target_id}")
+
             def process_videos(self, playlist_id):
                 try:
                     next_page_token = None
@@ -114,17 +179,11 @@ jobs:
                                     'commentCount': int(video_details['statistics'].get('commentCount', 0))
                                 }
                                 
-                                # Create or update video in Port
-                                self.create_entity('video', video_data)
+                                # Update or create the video in Port
+                                self.update_or_create_entity('video', video_data, self.video_blueprint_identifier)
                                 
-                                # Create relationship with playlist
-                                self.create_relationship({
-                                    'sourceId': video_id,
-                                    'sourceBlueprint': 'video',
-                                    'targetId': playlist_id,
-                                    'targetBlueprint': 'playlist',
-                                    'relationship': 'belongs_to'
-                                })
+                                # Create or update the relationship between video and playlist
+                                self.create_or_update_relationship(video_id, playlist_id, 'belongs_to')
                         
                         next_page_token = video_response.get('nextPageToken')
                         if not next_page_token:
@@ -133,39 +192,13 @@ jobs:
                     logger.error(f"Error processing videos: {str(e)}")
                     raise
 
-            def create_entity(self, entity_type, entity_data):
-                try:
-                    url = f'https://api.getport.io/entities/{entity_type}'
-                    headers = {'Authorization': f'Bearer {self.port_api_key}'}
-                    response = requests.post(url, json=entity_data, headers=headers)
-                    if response.status_code != 201:
-                        logger.error(f"Error creating {entity_type}: {response.text}")
-                        raise Exception(f"Failed to create {entity_type}")
-                    logger.info(f"Successfully created {entity_type} with identifier {entity_data['identifier']}")
-                except Exception as e:
-                    logger.error(f"Error creating entity: {str(e)}")
-                    raise
-
-            def create_relationship(self, relationship_data):
-                try:
-                    url = 'https://api.getport.io/relationships'
-                    headers = {'Authorization': f'Bearer {self.port_api_key}'}
-                    response = requests.post(url, json=relationship_data, headers=headers)
-                    if response.status_code != 201:
-                        logger.error(f"Error creating relationship: {response.text}")
-                        raise Exception("Failed to create relationship")
-                    logger.info(f"Successfully created relationship between {relationship_data['sourceId']} and {relationship_data['targetId']}")
-                except Exception as e:
-                    logger.error(f"Error creating relationship: {str(e)}")
-                    raise
-
             def run(self):
                 try:
                     logger.info(f"Starting ingestion at {datetime.now()}")
                     
                     # Process playlist
                     playlist_data = self.fetch_playlist_info()
-                    self.create_entity('playlist', playlist_data)
+                    self.update_or_create_entity('playlist', playlist_data, self.playlist_blueprint_identifier)
                     
                     # Process videos
                     self.process_videos(self.PLAYLIST_ID)
