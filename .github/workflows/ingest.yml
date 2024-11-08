@@ -69,9 +69,7 @@ jobs:
                     raise
 
             def refresh_port_token(self):
-                """Get a fresh access token from Port"""
                 try:
-                    # If using client credentials
                     if self.port_client_id and self.port_client_secret:
                         auth_url = f"{self.port_api_url}/auth/access_token"
                         auth_data = {
@@ -85,21 +83,18 @@ jobs:
                         else:
                             raise Exception(f"Failed to get access token: {response.text}")
                     else:
-                        # Fall back to using API key directly
                         self.access_token = self.port_api_key
                 except Exception as e:
                     logger.error(f"Error refreshing token: {str(e)}")
                     raise
 
             def get_headers(self):
-                """Get headers with current access token"""
                 return {
                     'Authorization': f"Bearer {self.access_token}",
                     'Content-Type': 'application/json'
                 }
 
             def handle_response(self, response, operation):
-                """Handle API response and refresh token if needed"""
                 if response.status_code == 401:
                     logger.info("Token expired, refreshing...")
                     self.refresh_port_token()
@@ -125,8 +120,8 @@ jobs:
                         'properties': {
                             'title': playlist['snippet']['title'],
                             'description': playlist['snippet']['description'],
-                            'thumbnailUrl': playlist['snippet']['thumbnails']['default']['url'],
-                            'videoCount': playlist['contentDetails']['itemCount']
+                            'thumbnail_url': playlist['snippet']['thumbnails']['default']['url'],
+                            'video_count': playlist['contentDetails']['itemCount']
                         }
                     }
                     logger.info(f"Fetched playlist data: {playlist_data}")
@@ -157,7 +152,6 @@ jobs:
                         
                         logger.info(f"Attempting to create/update entity with data: {entity_data}")
                         
-                        # Check if entity exists
                         existing_entity = self.get_entity(entity_data['identifier'], blueprint_identifier)
                         
                         if existing_entity:
@@ -177,7 +171,7 @@ jobs:
                         
                         retry_count += 1
                         if retry_count < max_retries:
-                            time.sleep(1)  # Wait before retrying
+                            time.sleep(1)
                             
                     except Exception as e:
                         logger.error(f"Error in update_or_create_entity: {str(e)}")
@@ -225,14 +219,14 @@ jobs:
                                     'properties': {
                                         'title': item['snippet']['title'],
                                         'description': item['snippet']['description'],
-                                        'thumbnailUrl': item['snippet']['thumbnails']['default']['url'],
+                                        'thumbnail_url': item['snippet']['thumbnails']['default']['url'],
                                         'duration': video_details['contentDetails']['duration'],
-                                        'viewCount': int(video_details['statistics'].get('viewCount', 0)),
-                                        'likeCount': int(video_details['statistics'].get('likeCount', 0)),
-                                        'commentCount': int(video_details['statistics'].get('commentCount', 0))
+                                        'view_count': int(video_details['statistics'].get('viewCount', 0)),
+                                        'like_count': int(video_details['statistics'].get('likeCount', 0)),
+                                        'comment_count': int(video_details['statistics'].get('commentCount', 0))
                                     },
                                     'relations': {
-                                        'playlist': playlist_id
+                                        'belongs_to': playlist_id  # Changed to match your blueprint relation name
                                     }
                                 }
                                 
