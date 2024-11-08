@@ -1,0 +1,161 @@
+name: Ingest YouTube Playlist
+
+on:
+  schedule:
+    - cron: "0 0 * * *"  # Triggered every day at midnight UTC
+  workflow_dispatch:
+
+jobs:
+  ingest-youtube-data:
+    runs-on: ubuntu-latest
+    
+    env:
+      YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+      PORT_API_KEY: ${{ secrets.PORT_API_KEY }}
+    
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install google-api-python-client port-sdk
+    
+    - name: Run ingestion
+      run: |
+        python << 'EOF'
+        from googleapiclient.discovery import build
+        from port_sdk import Port
+        import os
+        from datetime import datetime
+        import logging
+        import sys
+
+        # Set up logging
+        logging.basicConfig(level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        stream=sys.stdout
+        )
+        logger = logging.getLogger(__name__)
+
+        class YouTubePortIngestion:
+            def __init__(self):
+                self.PLAYLIST_ID = 'PL5ErBr2d3QJH0kbwTQ7HSuzvBb4zIWzhy'
+                try:
+                    self.youtube = build('youtube', 'v3', developerKey=os.environ['YOUTUBE_API_KEY'])
+                    self.port = Port(os.environ['PORT_API_KEY'])
+                    logger.info("Successfully initialized YouTube and Port clients")
+                except KeyError as e:
+                    logger.error(f"Missing environment variable: {str(e)}")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error initializing clients: {str(e)}")
+                    raise
+
+            def fetch_playlist_info(self):
+                try:
+                    playlist_response = self.youtube.playlists().list(
+                        part='snippet,contentDetails',
+                        id=self.PLAYLIST_ID
+                    ).execute()
+                    
+                    playlist = playlist_response['items'][0]
+                    return {
+                        'identifier': self.PLAYLIST_ID,
+                        'title': playlist['snippet']['title'],
+                        'description': playlist['snippet']['description'],
+                        'thumbnailUrl': playlist['snippet']['thumbnails']['default']['url'],
+                        'videoCount': playlist['contentDetails']['itemCount']
+                    }
+                except Exception as e:
+                    logger.error(f"Error fetching playlist info: {str(e)}")
+                    raise
+
+            def fetch_video_details(self, video_id):
+                try:
+                    video_response = self.youtube.videos().list(
+                        part='statistics,contentDetails',
+                        id=video_id
+                    ).execute()
+                    return video_response['items'][0]
+                except Exception as e:
+                    logger.error(f"Error fetching video details for {video_id}: {str(e)}")
+                    return None
+
+            def process_videos(self, playlist_id):
+                try:
+                    next_page_token = None
+                    while True:
+                        video_response = self.youtube.playlistItems().list(
+                            part='snippet,contentDetails',
+                            playlistId=playlist_id,
+                            maxResults=50,
+                            pageToken=next_page_token
+                        ).execute()
+                        
+                        for item in video_response['items']:
+                            video_id = item['contentDetails']['videoId']
+                            video_details = self.fetch_video_details(video_id)
+                            
+                            if video_details:
+                                video_data = {
+                                    'identifier': video_id,
+                                    'title': item['snippet']['title'],
+                                    'description': item['snippet']['description'],
+                                    'thumbnailUrl': item['snippet']['thumbnails']['default']['url'],
+                                    'duration': video_details['contentDetails']['duration'],
+                                    'viewCount': int(video_details['statistics'].get('viewCount', 0)),
+                                    'likeCount': int(video_details['statistics'].get('likeCount', 0)),
+                                    'commentCount': int(video_details['statistics'].get('commentCount', 0))
+                                }
+                                
+                                # Create or update video in Port
+                                self.port.create_entity('video', video_data)
+                                
+                                # Create relationship with playlist
+                                self.port.create_relationship({
+                                    'sourceId': video_id,
+                                    'sourceBlueprint': 'video',
+                                    'targetId': playlist_id,
+                                    'targetBlueprint': 'playlist',
+                                    'relationship': 'belongs_to'
+                                })
+                        
+                        next_page_token = video_response.get('nextPageToken')
+                        if not next_page_token:
+                            break
+                except Exception as e:
+                    logger.error(f"Error processing videos: {str(e)}")
+                    raise
+
+            def run(self):
+                try:
+                    logger.info(f"Starting ingestion at {datetime.now()}")
+                    
+                    # Process playlist
+                    playlist_data = self.fetch_playlist_info()
+                    self.port.create_entity('playlist', playlist_data)
+                    
+                    # Process videos
+                    self.process_videos(self.PLAYLIST_ID)
+                    
+                    logger.info(f"Completed ingestion at {datetime.now()}")
+                except Exception as e:
+                    logger.error(f"Ingestion failed: {str(e)}")
+                    raise
+
+        if __name__ == "__main__":
+            try:
+                logger.info("Starting YouTube Port ingestion process")
+                ingestion = YouTubePortIngestion()
+                ingestion.run()
+                logger.info("Successfully completed YouTube Port ingestion")
+            except Exception as e:
+                logger.error(f"Fatal error in main execution: {str(e)}")
+                sys.exit(1)
+        EOF
